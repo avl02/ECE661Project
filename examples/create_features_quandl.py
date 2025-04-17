@@ -4,12 +4,14 @@ from typing import List
 
 import pandas as pd
 
-from data.pull_data import pull_quandl_sample_data
+from data.pull_data import pull_openbb_sample_data, pull_openbb_sample_data
 from settings.default import (
     QUANDL_TICKERS,
     CPD_QUANDL_OUTPUT_FOLDER,
     FEATURES_QUANDL_FILE_PATH,
     OPENBB_2003_TICKERS,
+    CPD_OPENBB_OUTPUT_FOLDER,
+    FEATURES_OPENBB_FILE_PATH,
 )
 from mom_trans.data_prep import (
     deep_momentum_strategy_features,
@@ -27,7 +29,7 @@ def main(
     features = pd.concat(
         [
             deep_momentum_strategy_features(
-                pull_quandl_sample_data(ticker)
+                pull_openbb_sample_data(ticker)
             ).assign(ticker=ticker)
             for ticker in tickers
         ]
@@ -118,10 +120,10 @@ if __name__ == "__main__":
         args = parser.parse_known_args()[0]
 
         return (
-            QUANDL_TICKERS,
-            CPD_QUANDL_OUTPUT_FOLDER(args.lookback_window_length),
+            OPENBB_2003_TICKERS,
+            CPD_OPENBB_OUTPUT_FOLDER(args.lookback_window_length),
             args.lookback_window_length,
-            FEATURES_QUANDL_FILE_PATH(args.lookback_window_length),
+            FEATURES_OPENBB_FILE_PATH(args.lookback_window_length),
             args.extra_lbw,
         )
 

@@ -48,14 +48,19 @@ class ChangePointsWithBounds(ChangePoints):
             )
         locations = [location]
         super().__init__(
-            kernels=kernels, locations=locations, steepness=steepness, name=name
+            kernels=kernels,
+            locations=locations,
+            steepness=steepness,
+            name=name,
         )
 
         affine = tfb.Shift(tf.cast(interval[0], tf.float64))(
             tfb.Scale(tf.cast(interval[1] - interval[0], tf.float64))
         )
         self.locations = gpflow.base.Parameter(
-            locations, transform=tfb.Chain([affine, tfb.Sigmoid()]), dtype=tf.float64
+            locations,
+            transform=tfb.Chain([affine, tfb.Sigmoid()]),
+            dtype=tf.float64,
         )
 
     def _sigmoids(self, X: tf.Tensor) -> tf.Tensor:
@@ -92,7 +97,9 @@ def fit_matern_kernel(
     )
     opt = gpflow.optimizers.Scipy()
     nlml = opt.minimize(
-        m.training_loss, m.trainable_variables, options=dict(maxiter=MAX_ITERATIONS)
+        m.training_loss,
+        m.trainable_variables,
+        options=dict(maxiter=MAX_ITERATIONS),
     ).fun
     params = {
         "kM_variance": m.kernel.variance.numpy(),
@@ -143,7 +150,10 @@ def fit_changepoint_kernel(
                 Matern32(variance=k2_variance, lengthscales=k2_lengthscale),
             ],
             location=kC_changepoint_location,
-            interval=(time_series_data["X"].iloc[0], time_series_data["X"].iloc[-1]),
+            interval=(
+                time_series_data["X"].iloc[0],
+                time_series_data["X"].iloc[-1],
+            ),
             steepness=kC_steepness,
         ),
     )
@@ -155,9 +165,13 @@ def fit_changepoint_kernel(
     changepoint_location = m.kernel.locations[0].numpy()
     params = {
         "k1_variance": m.kernel.kernels[0].variance.numpy().flatten()[0],
-        "k1_lengthscale": m.kernel.kernels[0].lengthscales.numpy().flatten()[0],
+        "k1_lengthscale": m.kernel.kernels[0]
+        .lengthscales.numpy()
+        .flatten()[0],
         "k2_variance": m.kernel.kernels[1].variance.numpy().flatten()[0],
-        "k2_lengthscale": m.kernel.kernels[1].lengthscales.numpy().flatten()[0],
+        "k2_lengthscale": m.kernel.kernels[1]
+        .lengthscales.numpy()
+        .flatten()[0],
         "kC_likelihood_variance": m.likelihood.variance.numpy().flatten()[0],
         "kC_changepoint_location": changepoint_location,
         "kC_steepness": m.kernel.steepness.numpy(),
@@ -190,7 +204,7 @@ def changepoint_loc_and_score(
     k1_lengthscale: float = None,
     k2_variance: float = None,
     k2_lengthscale: float = None,
-    kC_likelihood_variance=1.0, #TODO note this seems to work better by resetting this
+    kC_likelihood_variance=1.0,  # TODO note this seems to work better by resetting this
     # kC_likelihood_variance=None,
     kC_changepoint_location=None,
     kC_steepness=1.0,
@@ -222,7 +236,10 @@ def changepoint_loc_and_score(
 
     try:
         (kM_nlml, kM_params) = fit_matern_kernel(
-            time_series_data, kM_variance, kM_lengthscale, kM_likelihood_variance
+            time_series_data,
+            kM_variance,
+            kM_lengthscale,
+            kM_likelihood_variance,
         )
     except BaseException as ex:
         # do not want to optimise again if the hyperparameters
@@ -295,11 +312,17 @@ def changepoint_loc_and_score(
         ) = fit_changepoint_kernel(time_series_data)
 
     cp_score = changepoint_severity(kC_nlml, kM_nlml)
-    cp_loc_normalised = (time_series_data["X"].iloc[-1] - changepoint_location) / (
-        time_series_data["X"].iloc[-1] - time_series_data["X"].iloc[0]
-    )
+    cp_loc_normalised = (
+        time_series_data["X"].iloc[-1] - changepoint_location
+    ) / (time_series_data["X"].iloc[-1] - time_series_data["X"].iloc[0])
 
-    return cp_score, changepoint_location, cp_loc_normalised, kM_params, kC_params
+    return (
+        cp_score,
+        changepoint_location,
+        cp_loc_normalised,
+        kM_params,
+        kC_params,
+    )
 
 
 def run_module(
@@ -364,17 +387,21 @@ def run_module(
 
         try:
             if use_kM_hyp_to_initialise_kC:
-                cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
-                    ts_data_window,
+                cp_score, cp_loc, cp_loc_normalised, _, _ = (
+                    changepoint_loc_and_score(
+                        ts_data_window,
+                    )
                 )
             else:
-                cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
-                    ts_data_window,
-                    k1_lengthscale=1.0,
-                    k1_variance=1.0,
-                    k2_lengthscale=1.0,
-                    k2_variance=1.0,
-                    kC_likelihood_variance=1.0,
+                cp_score, cp_loc, cp_loc_normalised, _, _ = (
+                    changepoint_loc_and_score(
+                        ts_data_window,
+                        k1_lengthscale=1.0,
+                        k1_variance=1.0,
+                        k2_lengthscale=1.0,
+                        k2_variance=1.0,
+                        kC_likelihood_variance=1.0,
+                    )
                 )
 
         except:

@@ -9,7 +9,7 @@ import numpy as np
 from settings.default import PINNACLE_DATA_CUT, PINNACLE_DATA_FOLDER
 
 
-def pull_quandl_sample_data(ticker: str) -> pd.DataFrame:
+def pull_openbb_sample_data(ticker: str) -> pd.DataFrame:
     return (
         pd.read_csv(
             os.path.join("data", "quandl", f"{ticker}.csv"), parse_dates=[0]
@@ -76,10 +76,14 @@ def pull_pinnacle_data_multiple(
 
 
 def pull_openbb_sample_data(ticker: str) -> pd.DataFrame:
+    # Check if we're running from the data directory
+    if os.path.exists(os.path.join("openbb", f"{ticker}.csv")):
+        file_path = os.path.join("openbb", f"{ticker}.csv")
+    else:
+        file_path = os.path.join("data", "openbb", f"{ticker}.csv")
+
     return (
-        pd.read_csv(
-            os.path.join("data", "openbb", f"{ticker}.csv"), parse_dates=[0]
-        )
+        pd.read_csv(file_path, parse_dates=[0])
         .rename(columns={"Settle": "close"})
         .set_index("date")
         .replace(0.0, np.nan)

@@ -17,6 +17,18 @@ FEATURES_QUANDL_FILE_PATH = lambda lbw: os.path.join(
 
 FEATURES_QUANDL_FILE_PATH_DEFAULT = FEATURES_QUANDL_FILE_PATH(CPD_DEFAULT_LBW)
 
+CPD_OPENBB_OUTPUT_FOLDER = lambda lbw: os.path.join(
+    "data", f"openbb_cpd_{(lbw if lbw else 'none')}lbw"
+)
+
+CPD_OPENBB_OUTPUT_FOLDER_DEFAULT = CPD_OPENBB_OUTPUT_FOLDER(CPD_DEFAULT_LBW)
+
+FEATURES_OPENBB_FILE_PATH = lambda lbw: os.path.join(
+    "data", f"openbb_cpd_{(lbw if lbw else 'none')}lbw.csv"
+)
+
+FEATURES_OPENBB_FILE_PATH_DEFAULT = FEATURES_OPENBB_FILE_PATH(CPD_DEFAULT_LBW)
+
 QUANDL_TICKERS = [
     "ICE_SB",
     "CME_SF",

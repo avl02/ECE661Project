@@ -41,7 +41,9 @@ def read_changepoint_results_and_fill_na(
     )
 
 
-def prepare_cpd_features(folder_path: str, lookback_window_length: int) -> pd.DataFrame:
+def prepare_cpd_features(
+    folder_path: str, lookback_window_length: int
+) -> pd.DataFrame:
     """Read output data from changepoint detection module for all assets into a dataframe.
 
 
@@ -109,18 +111,22 @@ def deep_momentum_strategy_features(df_asset: pd.DataFrame) -> pd.DataFrame:
 
     trend_combinations = [(8, 24), (16, 48), (32, 96)]
     for short_window, long_window in trend_combinations:
-        df_asset[f"macd_{short_window}_{long_window}"] = MACDStrategy.calc_signal(
-            df_asset["srs"], short_window, long_window
+        df_asset[f"macd_{short_window}_{long_window}"] = (
+            MACDStrategy.calc_signal(
+                df_asset["srs"], short_window, long_window
+            )
         )
 
     # date features
     if len(df_asset):
         df_asset["day_of_week"] = df_asset.index.dayofweek
         df_asset["day_of_month"] = df_asset.index.day
-        df_asset["week_of_year"] = df_asset.index.weekofyear
+        df_asset["week_of_year"] = df_asset.index.isocalendar().week
         df_asset["month_of_year"] = df_asset.index.month
         df_asset["year"] = df_asset.index.year
-        df_asset["date"] = df_asset.index  # duplication but sometimes makes life easier
+        df_asset["date"] = (
+            df_asset.index
+        )  # duplication but sometimes makes life easier
     else:
         df_asset["day_of_week"] = []
         df_asset["day_of_month"] = []
@@ -128,12 +134,14 @@ def deep_momentum_strategy_features(df_asset: pd.DataFrame) -> pd.DataFrame:
         df_asset["month_of_year"] = []
         df_asset["year"] = []
         df_asset["date"] = []
-        
+
     return df_asset.dropna()
 
 
 def include_changepoint_features(
-    features: pd.DataFrame, cpd_folder_name: pd.DataFrame, lookback_window_length: int
+    features: pd.DataFrame,
+    cpd_folder_name: pd.DataFrame,
+    lookback_window_length: int,
 ) -> pd.DataFrame:
     """combine CP features and DMN featuress
 
