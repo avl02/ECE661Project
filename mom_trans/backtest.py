@@ -120,46 +120,55 @@ def _captured_returns_from_all_windows(
     captured_returns_col: str = "captured_returns",
     standard_window_size: int = 1,
 ) -> pd.Series:
-    """get sereis of captured returns from all intervals
-
-    Args:
-        experiment_name (str): name of experiment
-        train_intervals (List[Tuple[int, int, int]]): list of training intervals
-        volatility_rescaling (bool, optional): rescale to target annualised volatility. Defaults to True.
-        only_standard_windows (bool, optional): only include full windows. Defaults to True.
-        volatilites_known (List[float], optional): list of annualised volatities, if known. Defaults to None.
-        filter_identifiers (List[str], optional): only run for specified tickers. Defaults to None.
-        captured_returns_col (str, optional): column name of captured returns. Defaults to "captured_returns".
-        standard_window_size (int, optional): number of years in standard window. Defaults to 1.
-
-    Returns:
-        pd.Series: series of captured returns
-    """
+    """Get series of captured returns from all intervals, with optional volatility rescaling."""
     srs_list = []
-    volatilites = volatilites_known if volatilites_known else []
+    # start with any supplied vols, else empty list
+    volatilites = list(volatilites_known) if volatilites_known else []
+
     for interval in train_intervals:
-        if only_standard_windows and (
-            interval[2] - interval[1] == standard_window_size
-        ):
+        if only_standard_windows and (interval[2] - interval[1] == standard_window_size):
             df = pd.read_csv(
                 os.path.join(
                     _get_directory_name(experiment_name, interval),
                     "captured_returns_sw.csv",
-                ),
+                )
             )
 
             if filter_identifiers:
-                filter = pd.DataFrame({"identifier": filter_identifiers})
-                df = df.merge(filter, on="identifier")
-            num_identifiers = len(df["identifier"].unique())
-            srs = df.groupby("time")[captured_returns_col].sum() / num_identifiers
+                filt = pd.DataFrame({"identifier": filter_identifiers})
+                df = df.merge(filt, on="identifier")
+
+            n = df["identifier"].nunique()
+            srs = df.groupby("time")[captured_returns_col].sum() / n
             srs_list.append(srs)
-            if volatility_rescaling and not volatilites_known:
+
+            # compute and collect volatility only if we're doing rescaling
+            if volatility_rescaling and volatilites_known is None:
                 volatilites.append(annual_volatility(srs))
-    if volatility_rescaling:
-        return pd.concat(srs_list) * VOL_TARGET / np.mean(volatilites)
-    else:
-        return pd.concat(srs_list)
+
+    # 1) if nothing was collected, return an empty series
+    if not srs_list:
+        return pd.Series(dtype=float)
+
+    # 2) concatenate all windows
+    combined = pd.concat(srs_list)
+
+    # 3) if no rescaling requested, just return the raw series
+    if not volatility_rescaling:
+        return combined
+
+    # 4) filter valid vols (exclude None)
+    valid_vols = [v for v in volatilites if v is not None]
+    if valid_vols:
+        mean_vol = np.mean(valid_vols)
+        # only scale when mean_vol > 0
+        if mean_vol > 0:
+            return combined * VOL_TARGET / mean_vol
+
+    # 5) fallback: return raw concatenated series
+    return combined
+
+
 
 
 def save_results(
@@ -184,7 +193,7 @@ def save_results(
     results_asset_class = [results_sw]
     if asset_class_dictionary:
         results_sw["asset_class"] = results_sw["identifier"].map(
-            lambda i: asset_class_dictionary[i]
+            lambda i: asset_class_dictionary.get(i, "UNKNOWN")
         )
         classes = _get_asset_classes(asset_class_dictionary)
         for ac in classes:
@@ -271,6 +280,8 @@ def aggregate_and_save_all_windows(
         asset_classes = ["ALL"] + _get_asset_classes(asset_class_dictionary)
     else:
         asset_classes = ["ALL"]
+        
+    asset_classes = [ac for ac in asset_classes if ac in all_results.columns]
 
     average_metrics = {}
     list_metrics = {}
@@ -341,8 +352,11 @@ def aggregate_and_save_all_windows(
                         average_results[m + suffix].append(rescaled_dict[m + suffix])
 
         window_history = copy.deepcopy(average_results)
-        for key in average_results:
-            average_results[key] = np.mean(average_results[key])
+    for key, vals in window_history.items():
+        # filter out None entries
+        clean_vals = [v for v in vals if v is not None]
+        # compute mean only if we have data, else NaN
+        average_results[key] = np.mean(clean_vals) if clean_vals else float("nan")
 
         for bp in BACKTEST_AVERAGE_BASIS_POINTS:
             suffix = _basis_point_suffix(bp)

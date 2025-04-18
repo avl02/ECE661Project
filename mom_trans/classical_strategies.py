@@ -43,7 +43,7 @@ def calc_performance_metrics(
         f"sortino_ratio{metric_suffix}": sortino_ratio(srs),
         f"max_drawdown{metric_suffix}": -max_drawdown(srs),
         f"calmar_ratio{metric_suffix}": calmar_ratio(srs),
-        f"perc_pos_return{metric_suffix}": len(srs[srs > 0.0]) / len(srs),
+        f"perc_pos_return{metric_suffix}": (len(srs[srs > 0.0]) / len(srs) if len(srs) > 0 else 0.0),
         f"profit_loss_ratio{metric_suffix}": np.mean(srs[srs > 0.0])
         / np.mean(np.abs(srs[srs < 0.0])),
     }
@@ -129,7 +129,7 @@ def calc_sharpe_by_year(data: pd.DataFrame, suffix: str = None) -> dict:
         .apply(lambda y: sharpe_ratio(y["captured_returns"]))
     )
 
-    sharpes.index = "sharpe_ratio_" + sharpes.index.map(int).map(str) + suffix
+    sharpes.index = sharpes.index.map(lambda yr: f"sharpe_ratio_{int(yr)}{suffix}")
 
     return sharpes.to_dict()
 
