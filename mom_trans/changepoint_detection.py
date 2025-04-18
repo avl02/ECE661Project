@@ -10,9 +10,23 @@ from gpflow.kernels import ChangePoints, Matern32
 from sklearn.preprocessing import StandardScaler
 from tensorflow_probability import bijectors as tfb
 
+from tqdm import tqdm
 import os
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress INFO messages
+
+# Configure GPU usage
+gpus = tf.config.list_physical_devices("GPU")
+if gpus:
+    try:
+        # Enable memory growth to avoid allocating all GPU memory at once
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"GPU is available: {len(gpus)} GPU(s) detected")
+    except RuntimeError as e:
+        print(f"Error configuring GPU: {e}")
+else:
+    print("No GPU found. Running on CPU")
 
 Kernel = gpflow.kernels.base.Kernel
 
@@ -336,6 +350,7 @@ def run_module(
     start_date: dt.datetime = None,
     end_date: dt.datetime = None,
     use_kM_hyp_to_initialise_kC=True,
+    batch_size: int = 10,  # Process in batches to reduce memory usage
 ):
     """Run the changepoint detection module as described in https://arxiv.org/pdf/2105.13727.pdf
     for all times (in date range if specified). Outputs results to a csv.
@@ -380,41 +395,106 @@ def run_module(
 
     time_series_data["date"] = time_series_data.index
     time_series_data = time_series_data.reset_index(drop=True)
-    for window_end in range(lookback_window_length + 1, len(time_series_data)):
-        ts_data_window = time_series_data.iloc[
-            window_end - (lookback_window_length + 1) : window_end
-        ][["date", "daily_returns"]].copy()
-        ts_data_window["X"] = ts_data_window.index.astype(float)
-        ts_data_window = ts_data_window.rename(columns={"daily_returns": "Y"})
-        time_index = window_end - 1
-        window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
 
-        try:
-            if use_kM_hyp_to_initialise_kC:
-                cp_score, cp_loc, cp_loc_normalised, _, _ = (
-                    changepoint_loc_and_score(
-                        ts_data_window,
+    # for window_end in range(lookback_window_length + 1, len(time_series_data)):
+    #     ts_data_window = time_series_data.iloc[
+    #         window_end - (lookback_window_length + 1) : window_end
+    #     ][["date", "daily_returns"]].copy()
+    #     ts_data_window["X"] = ts_data_window.index.astype(float)
+    #     ts_data_window = ts_data_window.rename(columns={"daily_returns": "Y"})
+    #     time_index = window_end - 1
+    #     window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
+
+    #     try:
+    #         if use_kM_hyp_to_initialise_kC:
+    #             cp_score, cp_loc, cp_loc_normalised, _, _ = (
+    #                 changepoint_loc_and_score(
+    #                     ts_data_window,
+    #                 )
+    #             )
+    #         else:
+    #             cp_score, cp_loc, cp_loc_normalised, _, _ = (
+    #                 changepoint_loc_and_score(
+    #                     ts_data_window,
+    #                     k1_lengthscale=1.0,
+    #                     k1_variance=1.0,
+    #                     k2_lengthscale=1.0,
+    #                     k2_variance=1.0,
+    #                     kC_likelihood_variance=1.0,
+    #                 )
+    #             )
+
+    #     except:
+    #         # write as NA when fails and will deal with this later
+    #         cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
+
+    #     # #write the reults to the csv
+    #     with open(output_csv_file_path, "a") as f:
+    #         writer = csv.writer(f)
+    #         writer.writerow(
+    #             [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
+    #         )
+
+    # Process in batches to reduce memory consumption
+    # for batch_start in range(lookback_window_length + 1, len(time_series_data), batch_size):
+
+    # Process in batches with progress tracking
+    total_windows = len(time_series_data) - lookback_window_length - 1
+    for batch_start in tqdm(
+        range(lookback_window_length + 1, len(time_series_data), batch_size),
+        desc="processing windows",
+        total=(total_windows + batch_size - 1) // batch_size,
+        unit="batch",
+    ):
+        batch_end = min(batch_start + batch_size, len(time_series_data))
+        batch_results = []
+
+        print(
+            f"Processing batch {batch_start//batch_size + 1}/{(len(time_series_data) - lookback_window_length - 1 + batch_size - 1)//batch_size}"
+        )
+
+        for window_end in range(batch_start, batch_end):
+            ts_data_window = time_series_data.iloc[
+                window_end - (lookback_window_length + 1) : window_end
+            ][["date", "daily_returns"]].copy()
+            ts_data_window["X"] = ts_data_window.index.astype(float)
+            ts_data_window = ts_data_window.rename(
+                columns={"daily_returns": "Y"}
+            )
+            time_index = window_end - 1
+            window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
+
+            try:
+                if use_kM_hyp_to_initialise_kC:
+                    cp_score, cp_loc, cp_loc_normalised, _, _ = (
+                        changepoint_loc_and_score(
+                            ts_data_window,
+                        )
                     )
-                )
-            else:
-                cp_score, cp_loc, cp_loc_normalised, _, _ = (
-                    changepoint_loc_and_score(
-                        ts_data_window,
-                        k1_lengthscale=1.0,
-                        k1_variance=1.0,
-                        k2_lengthscale=1.0,
-                        k2_variance=1.0,
-                        kC_likelihood_variance=1.0,
+                else:
+                    cp_score, cp_loc, cp_loc_normalised, _, _ = (
+                        changepoint_loc_and_score(
+                            ts_data_window,
+                            k1_lengthscale=1.0,
+                            k1_variance=1.0,
+                            k2_lengthscale=1.0,
+                            k2_variance=1.0,
+                            kC_likelihood_variance=1.0,
+                        )
                     )
-                )
+            except:
+                # write as NA when fails and will deal with this later
+                cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
 
-        except:
-            # write as NA when fails and will deal with this later
-            cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
-
-        # #write the reults to the csv
-        with open(output_csv_file_path, "a") as f:
-            writer = csv.writer(f)
-            writer.writerow(
+            batch_results.append(
                 [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
             )
+
+        # Write batch results to CSV
+        with open(output_csv_file_path, "a") as f:
+            writer = csv.writer(f)
+            for result in batch_results:
+                writer.writerow(result)
+
+        # Clear batch results to free memory
+        batch_results = None

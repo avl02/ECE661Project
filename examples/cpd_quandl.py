@@ -16,6 +16,7 @@ def main(
     start_date: dt.datetime,
     end_date: dt.datetime,
     lookback_window_length: int,
+    batch_size: int = 10, # Add batch_size parameter with default value
 ):
     data = pull_openbb_sample_data(ticker)
     data["daily_returns"] = calc_returns(data["close"])
@@ -27,6 +28,7 @@ def main(
         start_date,
         end_date,
         USE_KM_HYP_TO_INITIALISE_KC,
+        batch_size=batch_size, # Pass batch_size to control memory usage
     )
 
 
@@ -81,6 +83,15 @@ if __name__ == "__main__":
             help="CPD lookback window length",
         )
 
+        parser.add_argument(
+            "batch_size",
+            metavar="b",
+            type=int,
+            nargs="?",
+            default=10,
+            help="Batch size for processing windows (helps manage memory usage)",
+        )
+
         args = parser.parse_known_args()[0]
 
         start_date = dt.datetime.strptime(args.start_date, "%Y-%m-%d")
@@ -92,6 +103,7 @@ if __name__ == "__main__":
             start_date,
             end_date,
             args.lookback_window_length,
+            args.batch_size
         )
 
     main(*get_args())
