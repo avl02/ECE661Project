@@ -2,22 +2,26 @@ import multiprocessing
 import argparse
 import os
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress INFO messages
+
 from settings.default import (
     QUANDL_TICKERS,
     CPD_QUANDL_OUTPUT_FOLDER,
     CPD_DEFAULT_LBW,
+    OPENBB_2003_TICKERS,
+    CPD_OPENBB_OUTPUT_FOLDER,
 )
 
-N_WORKERS = len(QUANDL_TICKERS)
+N_WORKERS = min(32, len(OPENBB_2003_TICKERS), multiprocessing.cpu_count())
 
 
 def main(lookback_window_length: int):
-    if not os.path.exists(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length)):
-        os.mkdir(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length))
+    if not os.path.exists(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length)):
+        os.mkdir(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length))
 
     all_processes = [
-        f'python -m examples.cpd_quandl "{ticker}" "{os.path.join(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length), ticker + ".csv")}" "1990-01-01" "2021-12-31" "{lookback_window_length}"'
-        for ticker in QUANDL_TICKERS
+        f'python -m examples.cpd_quandl "{ticker}" "{os.path.join(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length), ticker + ".csv")}" "1990-01-01" "2021-12-31" "{lookback_window_length}"'
+        for ticker in OPENBB_2003_TICKERS
     ]
     process_pool = multiprocessing.Pool(processes=N_WORKERS)
     process_pool.map(os.system, all_processes)

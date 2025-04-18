@@ -10,6 +10,10 @@ from gpflow.kernels import ChangePoints, Matern32
 from sklearn.preprocessing import StandardScaler
 from tensorflow_probability import bijectors as tfb
 
+import os
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress INFO messages
+
 Kernel = gpflow.kernels.base.Kernel
 
 MAX_ITERATIONS = 200
