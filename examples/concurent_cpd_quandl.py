@@ -21,41 +21,36 @@ print(f"Running with {N_WORKERS} workers")
 BATCH_SIZE = 18
 
 def main(lookback_window_length: int, batch_size: int = BATCH_SIZE):
-    if not os.path.exists(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length)):
-        os.mkdir(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length))
+    out_dir = CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length)
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Process tickers in batches
     total_batches = (len(OPENBB_2003_TICKERS) + batch_size - 1) // batch_size
-    for batch_idx in tqdm(range(total_batches), desc="Processing batches", unit = "batch"):
-    # for batch_idx in range(total_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, len(OPENBB_2003_TICKERS))
-        batch_tickers = OPENBB_2003_TICKERS[start_idx:end_idx]
-        
-        print(f"Processing batch {batch_idx + 1}/{total_batches} with {len(batch_tickers)} tickers")
-        
-        batch_processes = [
-            f'python -m examples.cpd_quandl "{ticker}" "{os.path.join(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length), ticker + ".csv")}" "1990-01-01" "2021-12-31" "{lookback_window_length}" "10"'
-            for ticker in batch_tickers
-        ]
-        
-        # Track progress of individual ticker processing within the batch
-        with multiprocessing.Pool(processes=N_WORKERS) as process_pool:
-          list(tqdm(
-            process_pool.imap(os.system, batch_processes),
-            total = len(batch_processes),
-            desc= f"Batch {batch_idx + 1} progress",
-            unit = "ticker"
-          ))
-        # process_pool = multiprocessing.Pool(processes=N_WORKERS)
-        # process_pool.map(os.system, batch_processes)
-        # process_pool.close()
-        # process_pool.join()
-        
-        print(f"Completed batch {batch_idx + 1}/{total_batches}")
-        time.sleep(0.5)
-        
+    for batch_idx in range(total_batches):
+        start, end = batch_idx*batch_size, (batch_idx+1)*batch_size
+        batch = OPENBB_2003_TICKERS[start:end]
+        to_run = []
+        for ticker in batch:
+            out_file = os.path.join(out_dir, f"{ticker}.csv")
+            if os.path.exists(out_file):
+                print(f"[skip]   {ticker} (already exists)")
+            else:
+                cmd = (
+                    f'python -m examples.cpd_quandl '
+                    f'"{ticker}" "{out_file}" '
+                    f'"1990-01-01" "2021-12-31" "{lookback_window_length}"'
+                )
+                to_run.append(cmd)
 
+        if not to_run:
+            print(f"Batch {batch_idx+1}/{total_batches} — nothing to do")
+            continue
+
+        print(f"Batch {batch_idx+1}/{total_batches} — processing {len(to_run)} tickers")
+        with multiprocessing.Pool(N_WORKERS) as p:
+            list(p.imap(os.system, to_run))
+        print(f"Batch {batch_idx+1}/{total_batches} complete\n")
+        
+        
     # all_processes = [
     #     f'python -m examples.cpd_quandl "{ticker}" "{os.path.join(CPD_OPENBB_OUTPUT_FOLDER(lookback_window_length), ticker + ".csv")}" "1990-01-01" "2021-12-31" "{lookback_window_length}"'
     #     for ticker in OPENBB_2003_TICKERS

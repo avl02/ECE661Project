@@ -349,152 +349,98 @@ def run_module(
     output_csv_file_path: str,
     start_date: dt.datetime = None,
     end_date: dt.datetime = None,
-    use_kM_hyp_to_initialise_kC=True,
-    batch_size: int = 10,  # Process in batches to reduce memory usage
+    use_kM_hyp_to_initialise_kC: bool = True,
+    batch_size: int = 10,
 ):
-    """Run the changepoint detection module as described in https://arxiv.org/pdf/2105.13727.pdf
-    for all times (in date range if specified). Outputs results to a csv.
+    """Run the changepoint detection module in batches, checkpointing to CSV.
 
     Args:
-        time_series_data (pd.DataFrame): time series with date as index and with column daily_returns
-        lookback_window_length (int): lookback window length
-        output_csv_file_path (str): dull path, including csv extension to output results
-        start_date (dt.datetime, optional): start date for module, if None use all (with burnin in period qualt to length of LBW). Defaults to None.
-        end_date (dt.datetime, optional): end date for module. Defaults to None.
-        use_kM_hyp_to_initialise_kC (bool, optional): initialise Changepoint kernel parameters using the paremters from fitting Matern 3/2 kernel. Defaults to True.
+        time_series_data: DF indexed by date with column 'daily_returns'
+        lookback_window_length: lookback length for each window
+        output_csv_file_path: full path (including .csv) for results
+        start_date, end_date: optional dt.datetime boundaries
+        use_kM_hyp_to_initialise_kC: whether to seed CPD from Matern fit
+        batch_size: number of windows to process before each disk write
     """
+    # ─── PREPARE YOUR TIME SERIES SLICE ──────────────────────────────────
     if start_date and end_date:
         first_window = time_series_data.loc[:start_date].iloc[
             -(lookback_window_length + 1) :, :
         ]
-        remaining_data = time_series_data.loc[start_date:end_date, :]
-        if remaining_data.index[0] == start_date:
-            remaining_data = remaining_data.iloc[1:, :]
-        else:
-            first_window = first_window.iloc[1:]
-        time_series_data = pd.concat([first_window, remaining_data]).copy()
-    elif not start_date and not end_date:
+        remaining = time_series_data.loc[start_date:end_date]
+        remaining = remaining.iloc[1:] if remaining.index[0] == start_date else remaining
+        time_series_data = pd.concat([first_window, remaining])
+    elif start_date or end_date:
+        # handle one‐sided slicing
+        if start_date:
+            first_window = time_series_data.loc[:start_date].iloc[
+                -(lookback_window_length + 1) :, :
+            ]
+            remaining = time_series_data.loc[start_date:]
+            remaining = remaining.iloc[1:] if remaining.index[0] == start_date else remaining
+            time_series_data = pd.concat([first_window, remaining])
+        else:  # only end_date
+            time_series_data = time_series_data.loc[:end_date]
+    else:
         time_series_data = time_series_data.copy()
-    elif not start_date:
-        time_series_data = time_series_data.iloc[:end_date, :].copy()
-    elif not end_date:
-        first_window = time_series_data.loc[:start_date].iloc[
-            -(lookback_window_length + 1) :, :
-        ]
-        remaining_data = time_series_data.loc[start_date:, :]
-        if remaining_data.index[0] == start_date:
-            remaining_data = remaining_data.iloc[1:, :]
-        else:
-            first_window = first_window.iloc[1:]
-        time_series_data = pd.concat([first_window, remaining_data]).copy()
 
+    # ─── WRITE THE CSV HEADER ONCE ──────────────────────────────────────
     csv_fields = ["date", "t", "cp_location", "cp_location_norm", "cp_score"]
-    with open(output_csv_file_path, "w") as f:
+    with open(output_csv_file_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(csv_fields)
 
-    time_series_data["date"] = time_series_data.index
-    time_series_data = time_series_data.reset_index(drop=True)
+    # normalize index into a column for window‐by‐window processing
+    time_series_data = (
+        time_series_data.assign(date=time_series_data.index)
+        .reset_index(drop=True)
+    )
 
-    # for window_end in range(lookback_window_length + 1, len(time_series_data)):
-    #     ts_data_window = time_series_data.iloc[
-    #         window_end - (lookback_window_length + 1) : window_end
-    #     ][["date", "daily_returns"]].copy()
-    #     ts_data_window["X"] = ts_data_window.index.astype(float)
-    #     ts_data_window = ts_data_window.rename(columns={"daily_returns": "Y"})
-    #     time_index = window_end - 1
-    #     window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
-
-    #     try:
-    #         if use_kM_hyp_to_initialise_kC:
-    #             cp_score, cp_loc, cp_loc_normalised, _, _ = (
-    #                 changepoint_loc_and_score(
-    #                     ts_data_window,
-    #                 )
-    #             )
-    #         else:
-    #             cp_score, cp_loc, cp_loc_normalised, _, _ = (
-    #                 changepoint_loc_and_score(
-    #                     ts_data_window,
-    #                     k1_lengthscale=1.0,
-    #                     k1_variance=1.0,
-    #                     k2_lengthscale=1.0,
-    #                     k2_variance=1.0,
-    #                     kC_likelihood_variance=1.0,
-    #                 )
-    #             )
-
-    #     except:
-    #         # write as NA when fails and will deal with this later
-    #         cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
-
-    #     # #write the reults to the csv
-    #     with open(output_csv_file_path, "a") as f:
-    #         writer = csv.writer(f)
-    #         writer.writerow(
-    #             [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
-    #         )
-
-    # Process in batches to reduce memory consumption
-    # for batch_start in range(lookback_window_length + 1, len(time_series_data), batch_size):
-
-    # Process in batches with progress tracking
+    # ─── SLIDING WINDOWS IN BATCHES ────────────────────────────────────
     total_windows = len(time_series_data) - lookback_window_length - 1
-    for batch_start in tqdm(
-        range(lookback_window_length + 1, len(time_series_data), batch_size),
-        desc="processing windows",
-        total=(total_windows + batch_size - 1) // batch_size,
-        unit="batch",
+    n_batches = (total_windows + batch_size - 1) // batch_size
+
+    for batch_i, batch_start in enumerate(
+        tqdm(
+            range(lookback_window_length + 1, len(time_series_data), batch_size),
+            total=n_batches,
+            desc="processing CPD batches",
+            unit="batch",
+        )
     ):
         batch_end = min(batch_start + batch_size, len(time_series_data))
         batch_results = []
 
-        print(
-            f"Processing batch {batch_start//batch_size + 1}/{(len(time_series_data) - lookback_window_length - 1 + batch_size - 1)//batch_size}"
-        )
-
         for window_end in range(batch_start, batch_end):
-            ts_data_window = time_series_data.iloc[
+            window = time_series_data.iloc[
                 window_end - (lookback_window_length + 1) : window_end
             ][["date", "daily_returns"]].copy()
-            ts_data_window["X"] = ts_data_window.index.astype(float)
-            ts_data_window = ts_data_window.rename(
-                columns={"daily_returns": "Y"}
-            )
-            time_index = window_end - 1
-            window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
+            window["X"] = window.index.astype(float)
+            window = window.rename(columns={"daily_returns": "Y"})
+            t_index = window_end - 1
+            window_date = window["date"].iloc[-1].strftime("%Y-%m-%d")
 
             try:
                 if use_kM_hyp_to_initialise_kC:
-                    cp_score, cp_loc, cp_loc_normalised, _, _ = (
-                        changepoint_loc_and_score(
-                            ts_data_window,
-                        )
-                    )
+                    cp_score, cp_loc, cp_loc_norm, _, _ = changepoint_loc_and_score(window)
                 else:
-                    cp_score, cp_loc, cp_loc_normalised, _, _ = (
-                        changepoint_loc_and_score(
-                            ts_data_window,
-                            k1_lengthscale=1.0,
-                            k1_variance=1.0,
-                            k2_lengthscale=1.0,
-                            k2_variance=1.0,
-                            kC_likelihood_variance=1.0,
-                        )
+                    cp_score, cp_loc, cp_loc_norm, _, _ = changepoint_loc_and_score(
+                        window,
+                        k1_lengthscale=1.0,
+                        k1_variance=1.0,
+                        k2_lengthscale=1.0,
+                        k2_variance=1.0,
+                        kC_likelihood_variance=1.0,
                     )
-            except:
-                # write as NA when fails and will deal with this later
-                cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
+            except Exception:
+                cp_score, cp_loc, cp_loc_norm = "NA", "NA", "NA"
 
-            batch_results.append(
-                [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
-            )
+            batch_results.append([window_date, t_index, cp_loc, cp_loc_norm, cp_score])
 
-        # Write batch results to CSV
-        with open(output_csv_file_path, "a") as f:
+        # ─── APPEND THIS BATCH TO THE CSV ────────────────────────────────
+        with open(output_csv_file_path, "a", newline="") as f:
             writer = csv.writer(f)
-            for result in batch_results:
-                writer.writerow(result)
+            writer.writerows(batch_results)
 
-        # Clear batch results to free memory
+        # free memory before next batch
         batch_results = None
