@@ -13,21 +13,26 @@ from tensorflow_probability import bijectors as tfb
 
 from tqdm import tqdm
 import os
+import multiprocessing
+import time
+import psutil
+import sys
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Suppress INFO messages
 
-# Configure GPU usage
-gpus = tf.config.list_physical_devices("GPU")
-if gpus:
-    try:
-        # Enable memory growth to avoid allocating all GPU memory at once
+# Try to properly configure GPU
+try:
+    # Prevent TensorFlow from allocating all GPU memory at once
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
         for gpu in gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
         print(f"GPU is available: {len(gpus)} GPU(s) detected")
-    except RuntimeError as e:
-        print(f"Error configuring GPU: {e}")
-else:
-    print("No GPU found. Running on CPU")
+    else:
+        print("No GPU found. Running on CPU")
+except Exception as e:
+    print(f"Error configuring GPU, falling back to CPU: {e}")
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU usage
 
 Kernel = gpflow.kernels.base.Kernel
 
@@ -106,25 +111,52 @@ def fit_matern_kernel(
     Returns:
         Tuple[float, Dict[str, float]]: negative log marginal likelihood and paramters after fitting the GP
     """
-    m = gpflow.models.GPR(
-        data=(
-            time_series_data.loc[:, ["X"]].to_numpy(),
-            time_series_data.loc[:, ["Y"]].to_numpy(),
-        ),
-        kernel=Matern32(variance=variance, lengthscales=lengthscale),
-        noise_variance=likelihood_variance,
-    )
-    opt = gpflow.optimizers.Scipy()
-    nlml = opt.minimize(
-        m.training_loss,
-        m.trainable_variables,
-        options=dict(maxiter=MAX_ITERATIONS),
-    ).fun
-    params = {
-        "kM_variance": m.kernel.variance.numpy(),
-        "kM_lengthscales": m.kernel.lengthscales.numpy(),
-        "kM_likelihood_variance": m.likelihood.variance.numpy(),
-    }
+    try:
+      m = gpflow.models.GPR(
+          data=(
+              time_series_data.loc[:, ["X"]].to_numpy(),
+              time_series_data.loc[:, ["Y"]].to_numpy(),
+          ),
+          kernel=Matern32(variance=variance, lengthscales=lengthscale),
+          noise_variance=likelihood_variance,
+      )
+      opt = gpflow.optimizers.Scipy()
+      nlml = opt.minimize(
+          m.training_loss,
+          m.trainable_variables,
+          options=dict(maxiter=MAX_ITERATIONS),
+      ).fun
+      params = {
+          "kM_variance": m.kernel.variance.numpy(),
+          "kM_lengthscales": m.kernel.lengthscales.numpy(),
+          "kM_likelihood_variance": m.likelihood.variance.numpy(),
+      }
+    except tf.errors.InternalError as e:
+      if "CUDA" in str(e):
+        print("GPU error detected, retrying with CPU...")
+        # Force CPU for this operation
+        with tf.device('/CPU:0'):
+          m = gpflow.models.GPR(
+              data=(
+                  time_series_data.loc[:, ["X"]].to_numpy(),
+                  time_series_data.loc[:, ["Y"]].to_numpy(),
+              ),
+              kernel=Matern32(variance=variance, lengthscales=lengthscale),
+              noise_variance=likelihood_variance,
+          )
+          opt = gpflow.optimizers.Scipy()
+          nlml = opt.minimize(
+              m.training_loss,
+              m.trainable_variables,
+              options=dict(maxiter=MAX_ITERATIONS),
+          ).fun
+          params = {
+              "kM_variance": m.kernel.variance.numpy(),
+              "kM_lengthscales": m.kernel.lengthscales.numpy(),
+              "kM_likelihood_variance": m.likelihood.variance.numpy(),
+          }
+      else:
+        raise
 
     # Clear TF graph and release memory
     del m, opt
@@ -359,7 +391,40 @@ def changepoint_loc_and_score(
         kC_params,
     )
 
+# Add this function to process a single time window
+def process_time_window(args):
+    """Process a single time window
+    Returns (window_date, time_index, cp_loc, cp_loc_normalised, cp_score)
+    """
+    ts_data_window, time_index, use_kM_hyp_to_initialise_kC = args
+    
+    window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
+    
+    try:
+        if use_kM_hyp_to_initialise_kC:
+            cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
+                ts_data_window,
+            )
+        else:
+            cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
+                ts_data_window,
+                k1_lengthscale=1.0,
+                k1_variance=1.0,
+                k2_lengthscale=1.0,
+                k2_variance=1.0,
+                kC_likelihood_variance=1.0,
+            )
+    except Exception as e:
+        # write as NA when fails and will deal with this later
+        cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
+        print(f"Error processing window {window_date}: {str(e)}")
+    
+    # Clear memory after each window
+    gc.collect()
+    
+    return [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
 
+# Modify the run_module function to process time windows in batches
 def run_module(
     time_series_data: pd.DataFrame,
     lookback_window_length: int,
@@ -367,20 +432,15 @@ def run_module(
     start_date: dt.datetime = None,
     end_date: dt.datetime = None,
     use_kM_hyp_to_initialise_kC=True,
-    batch_size: int = 10,
-    memory_threshold: int = 80,
+    batch_size: int = 10,  # Process time windows in batches
+    memory_threshold: int = 80,  # Memory threshold to pause processing
 ):
     """Run the changepoint detection module as described in https://arxiv.org/pdf/2105.13727.pdf
     for all times (in date range if specified). Outputs results to a csv.
-
-    Args:
-        time_series_data (pd.DataFrame): time series with date as index and with column daily_returns
-        lookback_window_length (int): lookback window length
-        output_csv_file_path (str): dull path, including csv extension to output results
-        start_date (dt.datetime, optional): start date for module, if None use all (with burnin in period qualt to length of LBW). Defaults to None.
-        end_date (dt.datetime, optional): end date for module. Defaults to None.
-        use_kM_hyp_to_initialise_kC (bool, optional): initialise Changepoint kernel parameters using the paremters from fitting Matern 3/2 kernel. Defaults to True.
+    
+    This version processes time windows in parallel batches for improved memory efficiency.
     """
+    # Previous data preparation code remains the same
     if start_date and end_date:
         first_window = time_series_data.loc[:start_date].iloc[
             -(lookback_window_length + 1) :, :
@@ -406,158 +466,107 @@ def run_module(
             first_window = first_window.iloc[1:]
         time_series_data = pd.concat([first_window, remaining_data]).copy()
 
-    # Create progress tracking file for this ticker
+    # Create output CSV file
+    csv_fields = ["date", "t", "cp_location", "cp_location_norm", "cp_score"]
+    with open(output_csv_file_path, "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(csv_fields)
+    
+    # For progress tracking
     progress_file = output_csv_file_path + ".progress"
     processed_windows = set()
-
+    
     # Check if we're resuming an interrupted run
     if os.path.exists(progress_file):
-        with open(progress_file, "r") as f:
-            processed_windows = set(
-                int(line.strip()) for line in f.readlines()
-            )
-        print(
-            f"Resuming ticker from previous run. Already processed {len(processed_windows)} time windows"
-        )
+        with open(progress_file, 'r') as f:
+            processed_windows = set(int(line.strip()) for line in f.readlines())
+        print(f"Resuming from previous run. Already processed {len(processed_windows)} time windows")
 
-    # Create output CSV file if it doesn't exist or if we're starting fresh
-    if not os.path.exists(output_csv_file_path) or not processed_windows:
-        csv_fields = [
-            "date",
-            "t",
-            "cp_location",
-            "cp_location_norm",
-            "cp_score",
-        ]
-        with open(output_csv_file_path, "w") as f:
-            writer = csv.writer(f)
-            writer.writerow(csv_fields)
-
+    # Prepare time series data
     time_series_data["date"] = time_series_data.index
     time_series_data = time_series_data.reset_index(drop=True)
-
+    
+    # Process time windows in batches
+    total_windows = len(time_series_data) - lookback_window_length - 1
+    
     # Add memory monitoring
     def check_memory_usage():
-        """Check memory usage and print it"""
+        """Check memory usage and return percentage"""
         try:
             import psutil
-
             memory = psutil.virtual_memory()
             return memory.percent
         except ImportError:
             return 0  # If psutil not available, don't monitor memory
-
-    # Process in batches with progress tracking
-    total_windows = len(time_series_data) - lookback_window_length - 1
-
+    
+    # Determine available workers (use fewer workers for each ticker to save memory)
+    n_workers = min(multiprocessing.cpu_count() - 1, 4)  # Cap at 4 workers per ticker
+    print(f"Processing with {n_workers} workers")
+    
+    # Process in batches
     for batch_start in tqdm(
         range(lookback_window_length + 1, len(time_series_data), batch_size),
-        desc="processing windows",
+        desc="Processing time windows",
         total=(total_windows + batch_size - 1) // batch_size,
-        unit="batch",
+        unit="batch"
     ):
-        # Check memory usage before starting a new batch
+        # Check memory before starting a new batch
         memory_usage = check_memory_usage()
         if memory_usage > memory_threshold:
-            print(
-                f"Memory usage high ({memory_usage}%). Pausing to clean up..."
-            )
+            print(f"Memory usage high ({memory_usage}%). Pausing to clean up...")
             # Force garbage collection
             gc.collect()
-            tf.keras.backend.clear_session()  # Clear TF session
+            tf.keras.backend.clear_session()
+            # Wait for memory to clear
+            time.sleep(5)
+            
             # If memory still high, reduce batch size
             if check_memory_usage() > memory_threshold:
                 old_batch_size = batch_size
-                batch_size = max(1, batch_size - 2)
-                print(
-                    f"Reducing batch size from {old_batch_size} to {batch_size}"
-                )
-
+                batch_size = max(1, batch_size // 2)
+                print(f"Reducing batch size from {old_batch_size} to {batch_size}")
+        
         batch_end = min(batch_start + batch_size, len(time_series_data))
-        batch_results = []
-
-        print(
-            f"Processing batch {batch_start//batch_size + 1}/{(len(time_series_data) - lookback_window_length - 1 + batch_size - 1)//batch_size}"
-        )
-
+        
+        # Prepare window data for this batch
+        batch_windows = []
         for window_end in range(batch_start, batch_end):
             # Skip already processed windows
-            time_index = window_end - 1
-            if time_index in processed_windows:
-                print(f"Skipping already processed window {time_index}")
+            if window_end - 1 in processed_windows:
                 continue
-
-            # Process window
+                
             ts_data_window = time_series_data.iloc[
                 window_end - (lookback_window_length + 1) : window_end
             ][["date", "daily_returns"]].copy()
             ts_data_window["X"] = ts_data_window.index.astype(float)
-            ts_data_window = ts_data_window.rename(
-                columns={"daily_returns": "Y"}
-            )
-            window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
-
-            try:
-                if use_kM_hyp_to_initialise_kC:
-                    cp_score, cp_loc, cp_loc_normalised, _, _ = (
-                        changepoint_loc_and_score(
-                            ts_data_window,
-                        )
-                    )
-                else:
-                    cp_score, cp_loc, cp_loc_normalised, _, _ = (
-                        changepoint_loc_and_score(
-                            ts_data_window,
-                            k1_lengthscale=1.0,
-                            k1_variance=1.0,
-                            k2_lengthscale=1.0,
-                            k2_variance=1.0,
-                            kC_likelihood_variance=1.0,
-                        )
-                    )
-            except:
-                # write as NA when fails and will deal with this later
-                cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
-
-            batch_results.append(
-                [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
-            )
-
-            # Save progress after each window
-            processed_windows.add(time_index)
-            with open(progress_file, "w") as f:
-                for window_idx in processed_windows:
-                    f.write(f"{window_idx}\n")
-
-            # After processing each window, check if memory is critical
-            if window_end % 5 == 0:  # Check every 5 windows to reduce overhead
-                if check_memory_usage() > 90:  # Critical memory threshold
-                    print(
-                        "Memory critically high. Writing current results and clearing memory..."
-                    )
-                    # Write current batch results
-                    with open(output_csv_file_path, "a") as f:
-                        writer = csv.writer(f)
-                        for result in batch_results:
-                            writer.writerow(result)
-                    # Clear memory
-                    batch_results = []
-                    gc.collect()
-                    tf.keras.backend.clear_session()
-
-        # Write batch results to CSV
+            ts_data_window = ts_data_window.rename(columns={"daily_returns": "Y"})
+            time_index = window_end - 1
+            
+            batch_windows.append((ts_data_window, time_index, use_kM_hyp_to_initialise_kC))
+        
+        # If all windows in this batch have already been processed, skip it
+        if not batch_windows:
+            continue
+            
+        # Process this batch in parallel
+        with multiprocessing.Pool(processes=n_workers) as process_pool:
+            results = list(process_pool.map(process_time_window, batch_windows))
+        
+        # Write results to CSV
         with open(output_csv_file_path, "a") as f:
             writer = csv.writer(f)
-            for result in batch_results:
+            for result in results:
                 writer.writerow(result)
-
-        # Clear batch results to free memory
-        batch_results = None
-        gc.collect()  # Force garbage collection
+                # Mark this window as processed
+                processed_windows.add(result[1])
+        
+        # Update progress file
+        with open(progress_file, "w") as f:
+            for window_idx in processed_windows:
+                f.write(f"{window_idx}\n")
+        
+        # Clear memory after each batch
+        del batch_windows
+        gc.collect()
         tf.keras.backend.clear_session()
 
-    # Remove progress file when complete
-    if os.path.exists(progress_file):
-        os.remove(progress_file)
-
-    return True  # Return success status

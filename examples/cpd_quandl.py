@@ -1,5 +1,6 @@
 import argparse
 import datetime as dt
+import os
 
 import pandas as pd
 
@@ -18,18 +19,48 @@ def main(
     lookback_window_length: int,
     batch_size: int = 10, # Add batch_size parameter with default value
 ):
-    data = pull_openbb_sample_data(ticker)
-    data["daily_returns"] = calc_returns(data["close"])
 
-    cpd.run_module(
+    print(f"Processing ticker {ticker} from {start_date} to {end_date}")
+    print(f"LBW={lookback_window_length}, batch size={batch_size}")
+
+    try:
+      # Check if we already have a partially completed CSV
+      progress_file = output_file_path+".progress"
+      is_resuming = os.path.exists(progress_file)
+
+      if is_resuming:
+          print(f"Found progress file for {ticker}, resuming from previous run")
+
+      # Read data
+      data = pull_openbb_sample_data(ticker)
+      data["daily_returns"] = calc_returns(data["close"])
+
+      result = cpd.run_module(
         data,
         lookback_window_length,
         output_file_path,
         start_date,
         end_date,
         USE_KM_HYP_TO_INITIALISE_KC,
-        batch_size=batch_size, # Pass batch_size to control memory usage
-    )
+        batch_size=batch_size,
+      )
+
+      return result # Return success status from run_module
+
+    except Exception as e:
+      print(f"Error processing ticker {ticker}: {str(e)}")
+      return False
+
+
+    # cpd.run_module(
+    #     data,
+    #     lookback_window_length,
+    #     output_file_path,
+    #     start_date,
+    #     end_date,
+    #     USE_KM_HYP_TO_INITIALISE_KC,
+    #     batch_size=batch_size, # Pass batch_size to control memory usage
+    # )
 
 
 if __name__ == "__main__":
