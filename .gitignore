@@ -128,10 +128,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-results/
+
 .vscode/
 nohup*
 !data/pull_data.py
 !data/download_quandl_data.py
 !data/__init__.py
-!data/openbb_cpd_21lbw
