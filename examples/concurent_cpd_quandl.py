@@ -24,7 +24,7 @@ MEMORY_EMERGENCY = 95  # Emergency save and exit
 
 
 # Process tickers in batches to prevent memory exhaustion
-BATCH_SIZE = 7  # Reduced from 18 for better memory management
+BATCH_SIZE = 4  # Reduced from 18 for better memory management
 N_WORKERS = min(
     BATCH_SIZE, len(OPENBB_2003_TICKERS), multiprocessing.cpu_count() - 1
 )
