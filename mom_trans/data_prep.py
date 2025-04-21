@@ -32,7 +32,7 @@ def read_changepoint_results_and_fill_na(
 
     return (
         pd.read_csv(file_path, index_col=0, parse_dates=True)
-        .fillna(method="ffill")
+        .ffill()
         .dropna()  # if first values are na
         .assign(
             cp_location_norm=lambda row: (row["t"] - row["cp_location"])

@@ -1,19 +1,13 @@
-import os
-import json
-import pathlib
-import shutil
-import copy
-
-from keras_tuner.tuners.randomsearch import RandomSearch
+import os, json, shutil, copy, collections
 from abc import ABC, abstractmethod
 
-from tensorflow import keras
-import tensorflow as tf
 import numpy as np
 import pandas as pd
-import collections
-
+import tensorflow as tf
+from tensorflow import keras
 import keras_tuner as kt
+from keras_tuner.tuners.randomsearch import RandomSearch
+from empyrical import sharpe_ratio
 
 from settings.hp_grid import (
     HP_HIDDEN_LAYER_SIZE,
@@ -22,527 +16,332 @@ from settings.hp_grid import (
     HP_LEARNING_RATE,
     HP_MINIBATCH_SIZE,
 )
-
-from settings.fixed_params import MODLE_PARAMS
-
 from mom_trans.model_inputs import ModelFeatures
-from empyrical import sharpe_ratio
 
 
+# ───────────────────────────── custom loss (maximises Sharpe) ────────────────
 class SharpeLoss(tf.keras.losses.Loss):
     def __init__(self, output_size: int = 1):
-        self.output_size = output_size  # in case we have multiple targets => output dim[-1] = output_size * n_quantiles
         super().__init__()
+        self.output_size = output_size
 
     def call(self, y_true, weights):
-        captured_returns = weights * y_true
-        mean_returns = tf.reduce_mean(captured_returns)
-        return -(
-            mean_returns
-            / tf.sqrt(
-                tf.reduce_mean(tf.square(captured_returns))
-                - tf.square(mean_returns)
-                + 1e-9
-            )
-            * tf.sqrt(252.0)
-        )
+        captured = weights * y_true
+        μ = tf.reduce_mean(captured)
+        σ = tf.sqrt(tf.reduce_mean(tf.square(captured)) - tf.square(μ) + 1e-9)
+        return -(μ / σ) * tf.sqrt(252.0)        # annualised Sharpe
 
 
+# ─────────────────────────── validation callback (Sharpe) ────────────────────
 class SharpeValidationLoss(keras.callbacks.Callback):
-    # TODO check if weights already exist and pass in best sharpe
     def __init__(
         self,
-        inputs,
-        returns,
-        time_indices,
-        num_time,  # including a count for nulls which will be indexed as 0
-        early_stopping_patience,
-        n_multiprocessing_workers,
-        weights_save_location="tmp/checkpoint",
-        # verbose=0,
+        inputs, returns, time_idx, n_time,
+        patience, n_workers,
+        save_to="tmp/best.ckpt",
         min_delta=1e-4,
     ):
-        super(keras.callbacks.Callback, self).__init__()
-        self.inputs = inputs
-        self.returns = returns
-        self.time_indices = time_indices
-        self.n_multiprocessing_workers = n_multiprocessing_workers
-        self.early_stopping_patience = early_stopping_patience
-        self.num_time = num_time
+        super().__init__()
+        self.x        = inputs
+        self.r        = returns
+        self.time_idx = time_idx
+        self.n_time   = n_time
+        self.patience = patience
+        self.n_workers = n_workers
+        self.save_to  = save_to
         self.min_delta = min_delta
+        self.best, self.wait = -np.inf, 0
 
-        self.best_sharpe = np.NINF  # since calculating positive Sharpe...
-        # self.best_weights = None
-        self.weights_save_location = weights_save_location
-        # self.verbose = verbose
-
-    def set_weights_save_loc(self, weights_save_location):
-        self.weights_save_location = weights_save_location
-
-    def on_train_begin(self, logs=None):
-        self.patience_counter = 0
-        self.stopped_epoch = 0
-        self.best_sharpe = np.NINF
+    # keras‑tuner will update this path for every trial
+    def set_weights_save_loc(self, loc):
+        self.save_to = loc
 
     def on_epoch_end(self, epoch, logs=None):
-        positions = self.model.predict(
-            self.inputs,
-            workers=self.n_multiprocessing_workers,
-            use_multiprocessing=True,  # , batch_size=1
+        pos = self.model.predict(
+            self.x, use_multiprocessing=True, workers=self.n_workers
         )
-
-        captured_returns = tf.math.unsorted_segment_mean(
-            positions * self.returns, self.time_indices, self.num_time
-        )[1:]
-        # ignoring null times
-
-        # TODO sharpe
+        ret = tf.cast(self.r, pos.dtype)
+        captured = tf.math.unsorted_segment_mean(
+            pos * ret, self.time_idx, self.n_time
+        )[1:]                                   # drop dummy idx 0
         sharpe = (
-            tf.reduce_mean(captured_returns)
-            / tf.sqrt(
-                tf.math.reduce_variance(captured_returns)
-                + tf.constant(1e-9, dtype=tf.float64)
-            )
-            * tf.sqrt(tf.constant(252.0, dtype=tf.float64))
+            tf.reduce_mean(captured)
+            / tf.sqrt(tf.math.reduce_variance(captured) + 1e-9)
+            * tf.sqrt(252.0)
         ).numpy()
-        if sharpe > self.best_sharpe + self.min_delta:
-            self.best_sharpe = sharpe
-            self.patience_counter = 0  # reset the count
-            # self.best_weights = self.model.get_weights()
-            self.model.save_weights(self.weights_save_location)
+        logs["sharpe"] = sharpe
+
+        if sharpe > self.best + self.min_delta:
+            # ── make sure folder exists then save ──────────────────────
+            os.makedirs(os.path.dirname(self.save_to), exist_ok=True)
+            self.model.save_weights(self.save_to)
+            self.best, self.wait = sharpe, 0
         else:
-            # if self.verbose: #TODO
-            self.patience_counter += 1
-            if self.patience_counter >= self.early_stopping_patience:
-                self.stopped_epoch = epoch
+            self.wait += 1
+            if self.wait >= self.patience:
                 self.model.stop_training = True
-                self.model.load_weights(self.weights_save_location)
-        logs["sharpe"] = sharpe  # for keras tuner
-        print(f"\nval_sharpe {logs['sharpe']}")
+                # ── only load if the checkpoint is really there ────────
+                if os.path.exists(self.save_to):
+                    self.model.load_weights(self.save_to)
 
 
-# Tuner = RandomSearch
-class TunerValidationLoss(kt.tuners.RandomSearch):
-    def __init__(
-        self,
-        hypermodel,
-        objective,
-        max_trials,
-        hp_minibatch_size,
-        seed=None,
-        hyperparameters=None,
-        tune_new_entries=True,
-        allow_new_entries=True,
-        **kwargs,
-    ):
+# ───────────────────────── tuner mix‑in that injects batch_size ──────────────
+class _BatchSizeTuner(RandomSearch):
+    def __init__(self, hp_minibatch_size, *a, **kw):
         self.hp_minibatch_size = hp_minibatch_size
-        super().__init__(
-            hypermodel,
-            objective,
-            max_trials,
-            seed,
-            hyperparameters,
-            tune_new_entries,
-            allow_new_entries,
-            **kwargs,
-        )
+        super().__init__(*a, **kw)
 
     def run_trial(self, trial, *args, **kwargs):
         kwargs["batch_size"] = trial.hyperparameters.Choice(
-            "batch_size", values=self.hp_minibatch_size
+            "batch_size", self.hp_minibatch_size
         )
-        super(TunerValidationLoss, self).run_trial(trial, *args, **kwargs)
+        super().run_trial(trial, *args, **kwargs)
+
+    # Keras‑Tuner deep‑copies callbacks; keep ours intact
+    def _deepcopy_callbacks(self, callbacks):
+        return list(callbacks) if callbacks else []
 
 
-class TunerDiversifiedSharpe(kt.tuners.RandomSearch):
-    def __init__(
-        self,
-        hypermodel,
-        objective,
-        max_trials,
-        hp_minibatch_size,
-        seed=None,
-        hyperparameters=None,
-        tune_new_entries=True,
-        allow_new_entries=True,
-        **kwargs,
-    ):
-        self.hp_minibatch_size = hp_minibatch_size
-        super().__init__(
-            hypermodel,
-            objective,
-            max_trials,
-            seed,
-            hyperparameters,
-            tune_new_entries,
-            allow_new_entries,
-            **kwargs,
-        )
+class TunerValidationLoss(_BatchSizeTuner):
+    pass
+
+
+class TunerDiversifiedSharpe(_BatchSizeTuner):
+    def __init__(self, executions_per_trial=1, *a, **kw):
+        self.executions_per_trial = executions_per_trial
+        super().__init__(*a, **kw)
 
     def run_trial(self, trial, *args, **kwargs):
         kwargs["batch_size"] = trial.hyperparameters.Choice(
-            "batch_size", values=self.hp_minibatch_size
+            "batch_size", self.hp_minibatch_size
         )
-
-        original_callbacks = kwargs.pop("callbacks", [])
-
-        for callback in original_callbacks:
-            if isinstance(callback, SharpeValidationLoss):
-                callback.set_weights_save_loc(
+        orig_cbs = kwargs.pop("callbacks", [])
+        for cb in orig_cbs:
+            if isinstance(cb, SharpeValidationLoss):
+                cb.set_weights_save_loc(
                     self._get_checkpoint_fname(trial.trial_id, self._reported_step)
                 )
 
-        # Run the training process multiple times.
         metrics = collections.defaultdict(list)
-        for execution in range(self.executions_per_trial):
-            copied_fit_kwargs = copy.copy(kwargs)
-            callbacks = self._deepcopy_callbacks(original_callbacks)
-            self._configure_tensorboard_dir(callbacks, trial, execution)
-            callbacks.append(kt.engine.tuner_utils.TunerCallback(self, trial))
-            # Only checkpoint the best epoch across all executions.
-            # callbacks.append(model_checkpoint)
-            copied_fit_kwargs["callbacks"] = callbacks
+        for _ in range(self.executions_per_trial):
+            fit_kw = copy.copy(kwargs)
+            cbs = list(orig_cbs)
+            cbs.append(kt.engine.tuner_utils.TunerCallback(self, trial))
+            fit_kw["callbacks"] = cbs
+            hist = self._build_and_fit_model(trial, args, fit_kw)
+            for m, vals in hist.history.items():
+                best = np.min(vals) if self.oracle.objective.direction == "min" else np.max(vals)
+                metrics[m].append(best)
 
-            history = self._build_and_fit_model(trial, args, copied_fit_kwargs)
-            for metric, epoch_values in history.history.items():
-                if self.oracle.objective.direction == "min":
-                    best_value = np.min(epoch_values)
-                else:
-                    best_value = np.max(epoch_values)
-                metrics[metric].append(best_value)
-
-        # Average the results across executions and send to the Oracle.
-        averaged_metrics = {}
-        for metric, execution_values in metrics.items():
-            averaged_metrics[metric] = np.mean(execution_values)
         self.oracle.update_trial(
-            trial.trial_id, metrics=averaged_metrics, step=self._reported_step
+            trial.trial_id,
+            metrics={m: float(np.mean(v)) for m, v in metrics.items()},
+            step=self._reported_step,
         )
 
 
+# ─────────────────────────────── base DMN class ──────────────────────────────
 class DeepMomentumNetworkModel(ABC):
-    def __init__(self, project_name, hp_directory, hp_minibatch_size, **params):
-        params = params.copy()
-
-        self.time_steps = int(params["total_time_steps"])
-        self.input_size = int(params["input_size"])
-        self.output_size = int(params["output_size"])
-        self.n_multiprocessing_workers = int(params["multiprocessing_workers"])
-        self.num_epochs = int(params["num_epochs"])
-        self.early_stopping_patience = int(params["early_stopping_patience"])
-        # self.sliding_window = params["sliding_window"]
-        self.random_search_iterations = params["random_search_iterations"]
-        self.evaluate_diversified_val_sharpe = params["evaluate_diversified_val_sharpe"]
-        self.force_output_sharpe_length = params["force_output_sharpe_length"]
+    # ---------------------------------------------------------------------
+    def __init__(self, project_name, hp_dir, hp_minibatch_size, **params):
+        p = params.copy()
+        self.time_steps  = int(p.pop("total_time_steps"))
+        self.input_size  = int(p.pop("input_size"))
+        self.output_size = int(p.pop("output_size"))
+        self.n_workers   = int(p.pop("multiprocessing_workers"))
+        self.num_epochs  = int(p.pop("num_epochs"))
+        self.patience    = int(p.pop("early_stopping_patience"))
+        self.max_trials  = int(p.pop("random_search_iterations"))
+        self.diversified = bool(p.pop("evaluate_diversified_val_sharpe"))
+        self.force_out   = p.pop("force_output_sharpe_length", None)
 
         print("Deep Momentum Network params:")
-        for k in params:
-            print(f"{k} = {params[k]}")
+        for k, v in p.items(): print(f"  {k} = {v!r}")
 
-        # To build model
-        def model_builder(hp):
-            return self.model_builder(hp)
+        def build(hp): return self.model_builder(hp)
 
-        if self.evaluate_diversified_val_sharpe:
+        tuner_kw = dict(
+            hypermodel   = build,
+            max_trials   = self.max_trials,
+            directory    = hp_dir,
+            project_name = project_name,
+        )
+        if self.diversified:
             self.tuner = TunerDiversifiedSharpe(
-                model_builder,
-                # objective="val_loss",
                 objective=kt.Objective("sharpe", "max"),
                 hp_minibatch_size=hp_minibatch_size,
-                max_trials=self.random_search_iterations,
-                directory=hp_directory,
-                project_name=project_name,
+                **tuner_kw,
             )
         else:
             self.tuner = TunerValidationLoss(
-                model_builder,
                 objective="val_loss",
                 hp_minibatch_size=hp_minibatch_size,
-                max_trials=self.random_search_iterations,
-                directory=hp_directory,
-                project_name=project_name,
+                **tuner_kw,
             )
 
-    @abstractmethod
-    def model_builder(self, hp):
-        return
-
+    # helper --------------------------------------------------------------
     @staticmethod
-    def _index_times(val_time):
-        val_time_unique = np.sort(np.unique(val_time))
-        if val_time_unique[0]:  # check if ""
-            val_time_unique = np.insert(val_time_unique, 0, "")
-        mapping = dict(zip(val_time_unique, range(len(val_time_unique))))
+    def _index_times(t):
+        uniq = np.sort(np.unique(t))
+        if uniq[0] != "": uniq = np.insert(uniq, 0, "")
+        mapping = dict(zip(uniq, range(len(uniq))))
+        return np.vectorize(mapping.__getitem__)(t), len(mapping)
 
-        @np.vectorize
-        def get_indices(t):
-            return mapping[t]
+    # ---------------------------------------------------------------------
+    def hyperparameter_search(self, train, valid):
+        X, y, w, _, _       = ModelFeatures._unpack(train)
+        Xv, yv, wv, _, tv   = ModelFeatures._unpack(valid)
 
-        return get_indices(val_time), len(mapping)
-
-    def hyperparameter_search(self, train_data, valid_data):
-        data, labels, active_flags, _, _ = ModelFeatures._unpack(train_data)
-        val_data, val_labels, val_flags, _, val_time = ModelFeatures._unpack(valid_data)
-
-        if self.evaluate_diversified_val_sharpe:
-            val_time_indices, num_val_time = self._index_times(val_time)
-            callbacks = [
-                SharpeValidationLoss(
-                    val_data,
-                    val_labels,
-                    val_time_indices,
-                    num_val_time,
-                    self.early_stopping_patience,
-                    self.n_multiprocessing_workers,
-                ),
+        if self.diversified:
+            idx, n = self._index_times(tv)
+            cbs = [
+                SharpeValidationLoss(Xv, yv, idx, n, self.patience, self.n_workers),
                 tf.keras.callbacks.TerminateOnNaN(),
             ]
-            # self.model.run_eagerly = True
             self.tuner.search(
-                x=data,
-                y=labels,
-                sample_weight=active_flags,
+                x=X, y=y, sample_weight=w,
                 epochs=self.num_epochs,
-                # batch_size=minibatch_size,
-                # covered by Tuner class
-                callbacks=callbacks,
+                callbacks=cbs,
                 shuffle=True,
-                use_multiprocessing=True,
-                workers=self.n_multiprocessing_workers,
+                use_multiprocessing=True, workers=self.n_workers,
             )
         else:
-            callbacks = [
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="val_loss",
-                    patience=self.early_stopping_patience,
-                    min_delta=1e-4,
-                ),
-                # tf.keras.callbacks.TerminateOnNaN(),
-            ]
-            # self.model.run_eagerly = True
+            cbs=[keras.callbacks.EarlyStopping(
+                monitor="val_loss", patience=self.patience, restore_best_weights=True
+            )]
             self.tuner.search(
-                x=data,
-                y=labels,
-                sample_weight=active_flags,
+                x=X, y=y, sample_weight=w,
                 epochs=self.num_epochs,
-                # batch_size=minibatch_size,
-                # covered by Tuner class
-                validation_data=(
-                    val_data,
-                    val_labels,
-                    val_flags,
-                ),
-                callbacks=callbacks,
+                validation_data=(Xv, yv, wv),
+                callbacks=cbs,
                 shuffle=True,
-                use_multiprocessing=True,
-                workers=self.n_multiprocessing_workers,
-                # validation_batch_size=1,
+                use_multiprocessing=True, workers=self.n_workers,
             )
 
-        best_hp = self.tuner.get_best_hyperparameters(num_trials=1)[0].values
-        best_model = self.tuner.get_best_models(num_models=1)[0]
-        return best_hp, best_model
+        hp_best   = self.tuner.get_best_hyperparameters(1)[0].values
+        model_best= self.tuner.get_best_models(1)[0]
+        return hp_best, model_best
 
-    def load_model(
-        self,
-        hyperparameters,
-    ) -> tf.keras.Model:
-        hyp = kt.engine.hyperparameters.HyperParameters()
-        hyp.values = hyperparameters
-        return self.tuner.hypermodel.build(hyp)
+    # ---------------------------------------------------------------------
+    def load_model(self, hp_vals):
+        hp = kt.HyperParameters()
+        hp.values = hp_vals
+        return self.tuner.hypermodel.build(hp)
 
-    def fit(
-        self,
-        train_data: np.array,
-        valid_data: np.array,
-        hyperparameters,
-        temp_folder: str,
-    ):
-        data, labels, active_flags, _, _ = ModelFeatures._unpack(train_data)
-        val_data, val_labels, val_flags, _, val_time = ModelFeatures._unpack(valid_data)
+    # ---------------------------------------------------------------------
+    def fit(self, train, valid, hp_vals, tmp_ckpt="tmp/best.ckpt"):
+        X, y, w, _, _       = ModelFeatures._unpack(train)
+        Xv, yv, wv, _, tv   = ModelFeatures._unpack(valid)
+        model = self.load_model(hp_vals)
 
-        model = self.load_model(hyperparameters)
-
-        if self.evaluate_diversified_val_sharpe:
-            val_time_indices, num_val_time = self._index_times(val_time)
-            callbacks = [
-                SharpeValidationLoss(
-                    val_data,
-                    val_labels,
-                    val_time_indices,
-                    num_val_time,
-                    self.early_stopping_patience,
-                    self.n_multiprocessing_workers,
-                    weights_save_location=temp_folder,
-                ),
-                tf.keras.callbacks.TerminateOnNaN(),
-            ]
-            # self.model.run_eagerly = True
+        if self.diversified:
+            idx, n = self._index_times(tv)
+            cbs = [SharpeValidationLoss(
+                        Xv, yv, idx, n,
+                        self.patience, self.n_workers,
+                        save_to=tmp_ckpt
+                   ),
+                   tf.keras.callbacks.TerminateOnNaN()]
             model.fit(
-                x=data,
-                y=labels,
-                sample_weight=active_flags,
+                X, y, sample_weight=w,
                 epochs=self.num_epochs,
-                batch_size=hyperparameters["batch_size"],
-                callbacks=callbacks,
+                batch_size=hp_vals["batch_size"],
+                callbacks=cbs,
                 shuffle=True,
-                use_multiprocessing=True,
-                workers=self.n_multiprocessing_workers,
+                use_multiprocessing=True, workers=self.n_workers,
             )
-            model.load_weights(temp_folder)
+            if os.path.exists(tmp_ckpt):
+                model.load_weights(tmp_ckpt)
         else:
-            callbacks = [
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="val_loss",
-                    patience=self.early_stopping_patience,
-                    min_delta=1e-4,
-                    restore_best_weights=True,
-                ),
-                tf.keras.callbacks.TerminateOnNaN(),
-            ]
-            # self.model.run_eagerly = True
+            cbs=[keras.callbacks.EarlyStopping(
+                    monitor="val_loss", patience=self.patience,
+                    restore_best_weights=True)]
             model.fit(
-                x=data,
-                y=labels,
-                sample_weight=active_flags,
+                X, y, sample_weight=w,
                 epochs=self.num_epochs,
-                batch_size=hyperparameters["batch_size"],
-                validation_data=(
-                    val_data,
-                    val_labels,
-                    val_flags,
-                ),
-                callbacks=callbacks,
+                batch_size=hp_vals["batch_size"],
+                validation_data=(Xv, yv, wv),
+                callbacks=cbs,
                 shuffle=True,
-                use_multiprocessing=True,
-                workers=self.n_multiprocessing_workers,
+                use_multiprocessing=True, workers=self.n_workers,
             )
         return model
 
+    # ---------------------------------------------------------------------
     def evaluate(self, data, model):
-        """Applies evaluation metric to the training data.
-
-        Args:
-          data: Dataframe for evaluation
-          eval_metric: Evaluation metic to return, based on model definition.
-
-        Returns:
-          Computed evaluation loss.
-        """
-
-        inputs, outputs, active_entries, _, _ = ModelFeatures._unpack(data)
-
-        if self.evaluate_diversified_val_sharpe:
-            _, performance = self.get_positions(data, model, False)
-            return performance
-
+        X, y, w, _, _ = ModelFeatures._unpack(data)
+        if self.diversified:
+            _, perf = self.get_positions(data, model, False)
+            return perf
         else:
-            metric_values = model.evaluate(
-                x=inputs,
-                y=outputs,
-                sample_weight=active_entries,
-                workers=32,
-                use_multiprocessing=True,
+            vals = model.evaluate(
+                X, y, sample_weight=w,
+                use_multiprocessing=True, workers=self.n_workers,
             )
+            return dict(zip(model.metrics_names, vals))["loss"]
 
-            metrics = pd.Series(metric_values, model.metrics_names)
-            return metrics["loss"]
-
+    # ---------------------------------------------------------------------
     def get_positions(
-        self,
-        data,
-        model,
+        self, data, model,
         sliding_window=True,
         years_geq=np.iinfo(np.int32).min,
-        years_lt=np.iinfo(np.int32).max,
+        years_lt =np.iinfo(np.int32).max,
     ):
-        inputs, outputs, _, identifier, time = ModelFeatures._unpack(data)
+        X, y, _, ident, time = ModelFeatures._unpack(data)
         if sliding_window:
-            time = pd.to_datetime(
-                time[:, -1, 0].flatten()
-            )  # TODO to_datetime maybe not needed
-            years = time.map(lambda t: t.year)
-            identifier = identifier[:, -1, 0].flatten()
-            returns = outputs[:, -1, 0].flatten()
+            time = pd.to_datetime(time[:, -1, 0].flatten())
+            years= time.year
+            ident= ident[:, -1, 0].flatten()
+            rets = y[:, -1, 0].flatten()
         else:
             time = pd.to_datetime(time.flatten())
-            years = time.map(lambda t: t.year)
-            identifier = identifier.flatten()
-            returns = outputs.flatten()
+            years= time.year
+            ident= ident.flatten()
+            rets = y.flatten()
+
         mask = (years >= years_geq) & (years < years_lt)
 
-        positions = model.predict(
-            inputs,
-            workers=self.n_multiprocessing_workers,
-            use_multiprocessing=True,  # , batch_size=1
-        )
-        if sliding_window:
-            positions = positions[:, -1, 0].flatten()
-        else:
-            positions = positions.flatten()
+        pos = model.predict(X, use_multiprocessing=True, workers=self.n_workers)
+        pos = pos[:, -1, 0].flatten() if sliding_window else pos.flatten()
 
-        captured_returns = returns * positions
-        results = pd.DataFrame(
-            {
-                "identifier": identifier[mask],
-                "time": time[mask],
-                "returns": returns[mask],
-                "position": positions[mask],
-                "captured_returns": captured_returns[mask],
-            }
-        )
+        cap = rets * pos
+        df = pd.DataFrame(dict(
+            identifier=ident[mask],
+            time=time[mask],
+            returns=rets[mask],
+            position=pos[mask],
+            captured_returns=cap[mask]))
+        sharpe = sharpe_ratio(df.groupby("time")["captured_returns"].sum())
+        return df, sharpe
 
-        # don't need to divide sum by n because not storing here
-        # mean does not work as well (related to days where no information)
-        performance = sharpe_ratio(results.groupby("time")["captured_returns"].sum())
-
-        return results, performance
+    # ---------------------------------------------------------------------
+    @abstractmethod
+    def model_builder(self, hp): ...
 
 
+# ────────────────────────────────── concrete LSTM ────────────────────────────
 class LstmDeepMomentumNetworkModel(DeepMomentumNetworkModel):
-    def __init__(
-        self, project_name, hp_directory, hp_minibatch_size=HP_MINIBATCH_SIZE, **params
-    ):
-        super().__init__(project_name, hp_directory, hp_minibatch_size, **params)
+    def __init__(self, project_name, hp_dir, hp_minibatch_size=HP_MINIBATCH_SIZE, **params):
+        super().__init__(project_name, hp_dir, hp_minibatch_size, **params)
 
     def model_builder(self, hp):
-        hidden_layer_size = hp.Choice("hidden_layer_size", values=HP_HIDDEN_LAYER_SIZE)
-        dropout_rate = hp.Choice("dropout_rate", values=HP_DROPOUT_RATE)
-        max_gradient_norm = hp.Choice("max_gradient_norm", values=HP_MAX_GRADIENT_NORM)
-        learning_rate = hp.Choice("learning_rate", values=HP_LEARNING_RATE)
-        # minibatch_size = hp.Choice("hidden_layer_size", HP_MINIBATCH_SIZE)
+        hidden   = hp.Choice("hidden_layer_size",  HP_HIDDEN_LAYER_SIZE)
+        dropout  = hp.Choice("dropout_rate",       HP_DROPOUT_RATE)
+        clipnorm = hp.Choice("max_gradient_norm",  HP_MAX_GRADIENT_NORM)
+        lr       = hp.Choice("learning_rate",      HP_LEARNING_RATE)
 
-        input = keras.Input((self.time_steps, self.input_size))
-        lstm = tf.keras.layers.LSTM(
-            hidden_layer_size,
-            return_sequences=True,
-            dropout=dropout_rate,
-            stateful=False,
-            activation="tanh",
-            recurrent_activation="sigmoid",
-            recurrent_dropout=0,
-            unroll=False,
-            use_bias=True,
-        )(input)
-        dropout = keras.layers.Dropout(dropout_rate)(lstm)
+        inp = keras.Input((self.time_steps, self.input_size))
+        x   = keras.layers.LSTM(hidden, return_sequences=True, dropout=dropout)(inp)
+        x   = keras.layers.Dropout(dropout)(x)
+        out = keras.layers.TimeDistributed(
+                keras.layers.Dense(self.output_size, activation="tanh",
+                                   kernel_constraint=keras.constraints.max_norm(3))
+              )(x)
 
-        output = tf.keras.layers.TimeDistributed(
-            tf.keras.layers.Dense(
-                self.output_size,
-                activation=tf.nn.tanh,
-                kernel_constraint=keras.constraints.max_norm(3),
-            )
-        )(dropout[..., :, :])
-
-        model = keras.Model(inputs=input, outputs=output)
-
-        adam = keras.optimizers.legacy.Adam(learning_rate=learning_rate, clipnorm=max_gradient_norm)
-
-        sharpe_loss = SharpeLoss(self.output_size).call
-
+        model = keras.Model(inp, out)
         model.compile(
-            loss=sharpe_loss,
-            optimizer=adam,
+            optimizer = keras.optimizers.legacy.Adam(learning_rate=lr, clipnorm=clipnorm),
+            loss      = SharpeLoss(self.output_size).call,
             sample_weight_mode="temporal",
         )
         return model
