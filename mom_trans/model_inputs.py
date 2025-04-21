@@ -466,154 +466,82 @@ class ModelFeatures:
         )
 
     def _batch_data(self, data, sliding_window):
-        """Batches data for training.
-
-        Converts raw dataframe from a 2-D tabular format to a batched 3-D array
-        to feed into Keras model.
-
-        Args:
-          data: DataFrame to batch
-
-        Returns:
-          Batched Numpy array with shape=(?, self.time_steps, self.input_size)
         """
-        # TODO this works but is a bit of a mess
+        Convert flat DataFrame into 3‑D tensors.
+
+        Fixes:
+        • skips entities shorter than `total_time_steps`
+        • never appends `None` to the lists
+        • only concatenates non‑empty lists (prevents dim‑mismatch)
+        """
         data = data.copy()
         data["date"] = data.index.strftime("%Y-%m-%d")
 
-        id_col = get_single_col_by_input_type(InputTypes.ID, self._column_definition)
-        time_col = get_single_col_by_input_type(
-            InputTypes.TIME, self._column_definition
-        )
-        target_col = get_single_col_by_input_type(
-            InputTypes.TARGET, self._column_definition
-        )
+        id_col   = get_single_col_by_input_type(InputTypes.ID,   self._column_definition)
+        time_col = get_single_col_by_input_type(InputTypes.TIME, self._column_definition)
+        tgt_col  = get_single_col_by_input_type(InputTypes.TARGET, self._column_definition)
 
         input_cols = [
-            tup[0]
-            for tup in self._column_definition
-            if tup[2] not in {InputTypes.ID, InputTypes.TIME, InputTypes.TARGET}
+            c for c, _, t in self._column_definition
+            if t not in {InputTypes.ID, InputTypes.TIME, InputTypes.TARGET}
         ]
 
-        data_map = {}
+        # helper -------------------------------------------------------
+        L = self.total_time_steps
 
-        if sliding_window:
-            # Functions.
-            def _batch_single_entity(input_data):
-                time_steps = len(input_data)
-                lags = self.total_time_steps  # + int(self.extra_lookahead_steps)
-                x = input_data.values
-                if time_steps >= lags:
-                    return np.stack(
-                        [x[i : time_steps - (lags - 1) + i, :] for i in range(lags)],
-                        axis=1,
-                    )
-                else:
+        def _batch_single_entity(arr: np.ndarray, slide: bool):
+            T = len(arr)
+            if slide:
+                if T < L:
                     return None
+                return np.stack([arr[i:T-L+1+i] for i in range(L)], axis=1)
+            pad = (L - (T % L)) % L
+            if pad:
+                arr = np.concatenate([arr, np.zeros((pad, arr.shape[1]))])
+            return arr.reshape(-1, L, arr.shape[1])
 
-            for _, sliced in data.groupby(id_col):
+        # collect ------------------------------------------------------
+        data_map = {k: [] for k in ["identifier", "date", "inputs", "outputs", "active_entries"]}
 
-                col_mappings = {
-                    "identifier": [id_col],
-                    "date": [time_col],
-                    "outputs": [target_col],
-                    "inputs": input_cols,
-                }
+        for _, grp in data.groupby(id_col, sort=False):
+            tensors = {}
+            for key, cols in {
+                "identifier": [id_col],
+                "date":       [time_col],
+                "outputs":    [tgt_col],
+                "inputs":     input_cols,
+            }.items():
+                tens = _batch_single_entity(grp[cols].to_numpy(), sliding_window)
+                if tens is not None:
+                    tensors[key] = tens
 
-                for k in col_mappings:
-                    cols = col_mappings[k]
-                    arr = _batch_single_entity(sliced[cols].copy())
+            # skip entities with insufficient history
+            if "outputs" not in tensors:
+                continue
 
-                    if k not in data_map:
-                        data_map[k] = [arr]
-                    else:
-                        data_map[k].append(arr)
+            for k, tens in tensors.items():
+                data_map[k].append(tens)
 
-            # Combine all data
-            for k in data_map:
-                data_map[k] = np.concatenate(data_map[k], axis=0)
-
-            active_entries = np.ones_like(data_map["outputs"])
-            if "active_entries" not in data_map:
-                data_map["active_entries"] = active_entries
+            # active‑entry mask
+            if sliding_window:
+                ae = np.ones_like(tensors["outputs"])
             else:
-                data_map["active_entries"].append(active_entries)
+                ae = (np.sum(tensors["inputs"], axis=-1, keepdims=True) > 0).astype(float)
+            data_map["active_entries"].append(ae)
 
-        else:
-            for _, sliced in data.groupby(id_col):
+        # concatenate & trim ------------------------------------------
+        for key in list(data_map):
+            if data_map[key]:
+                data_map[key] = np.concatenate(data_map[key], axis=0)
+            else:
+                data_map.pop(key)
 
-                col_mappings = {
-                    "identifier": [id_col],
-                    "date": [time_col],
-                    "inputs": input_cols,
-                    "outputs": [target_col],
-                }
+        N = len(data_map["active_entries"])
+        for key in ("inputs", "outputs", "identifier", "date"):
+            data_map[key] = data_map[key][:N]
 
-                time_steps = len(sliced)
-                lags = self.total_time_steps
-                additional_time_steps_required = lags - (time_steps % lags)
-
-                def _batch_single_entity(input_data):
-                    x = input_data.values
-                    if additional_time_steps_required > 0:
-                        x = np.concatenate(
-                            [x, np.zeros((additional_time_steps_required, x.shape[1]))]
-                        )
-                    return x.reshape(-1, lags, x.shape[1])
-
-                # for k in col_mappings:
-                k = "outputs"
-                cols = col_mappings[k]
-                arr = _batch_single_entity(sliced[cols].copy())
-
-                batch_size = arr.shape[0]
-                sequence_lengths = [
-                    (
-                        lags
-                        if i != batch_size - 1
-                        else lags - additional_time_steps_required
-                    )
-                    for i in range(batch_size)
-                ]
-                active_entries = np.ones((arr.shape[0], arr.shape[1], arr.shape[2]))
-                for i in range(batch_size):
-                    active_entries[i, sequence_lengths[i] :, :] = 0
-                sequence_lengths = np.array(sequence_lengths, dtype=int)
-
-                if "active_entries" not in data_map:
-                    data_map["active_entries"] = [
-                        active_entries[sequence_lengths > 0, :, :]
-                    ]
-                else:
-                    data_map["active_entries"].append(
-                        active_entries[sequence_lengths > 0, :, :]
-                    )
-
-                if k not in data_map:
-                    data_map[k] = [arr[sequence_lengths > 0, :, :]]
-                else:
-                    data_map[k].append(arr[sequence_lengths > 0, :, :])
-
-                for k in set(col_mappings) - {"outputs"}:
-                    cols = col_mappings[k]
-                    arr = _batch_single_entity(sliced[cols].copy())
-
-                    if k not in data_map:
-                        data_map[k] = [arr[sequence_lengths > 0, :, :]]
-                    else:
-                        data_map[k].append(arr[sequence_lengths > 0, :, :])
-
-            # Combine all data
-            for k in data_map:
-                data_map[k] = np.concatenate(data_map[k], axis=0)
-
-        active_flags = (np.sum(data_map["active_entries"], axis=-1) > 0.0) * 1.0
-        data_map["inputs"] = data_map["inputs"][: len(active_flags)]
-        data_map["outputs"] = data_map["outputs"][: len(active_flags)]
-        data_map["active_entries"] = active_flags
-        data_map["identifier"] = data_map["identifier"][: len(active_flags)]
+        # clean string dummies
         data_map["identifier"][data_map["identifier"] == 0] = ""
-        data_map["date"] = data_map["date"][: len(active_flags)]
         data_map["date"][data_map["date"] == 0] = ""
         return data_map
 

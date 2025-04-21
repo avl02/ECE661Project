@@ -1,0 +1,592 @@
+{
+    "COMB": {
+        "annual_return": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return_0_5_bps": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio_0_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return_1_0_bps": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio_1_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return_1_5_bps": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio_1_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return_2_0_bps": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio_2_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return_2_5_bps": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio_2_5_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_volatility_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sharpe_ratio_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "downside_risk_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "sortino_ratio_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "max_drawdown_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "calmar_ratio_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "perc_pos_return_3_0_bps": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "profit_loss_ratio_3_0_bps": [
+            null,
+            null,
+            null,
+            null
+        ],
+        "annual_return_rescaled": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_return_rescaled_0_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled_0_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled_0_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled_0_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_return_rescaled_1_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled_1_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled_1_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled_1_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_return_rescaled_1_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled_1_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled_1_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled_1_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_return_rescaled_2_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled_2_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled_2_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled_2_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_return_rescaled_2_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled_2_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled_2_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled_2_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_return_rescaled_3_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "annual_volatility_rescaled_3_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "downside_risk_rescaled_3_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "max_drawdown_rescaled_3_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years_0_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years_1_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years_1_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years_2_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years_2_5_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ],
+        "sharpe_ratio_years_3_0_bps": [
+            NaN,
+            NaN,
+            NaN,
+            NaN
+        ]
+    }
+}
