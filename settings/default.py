@@ -1059,3 +1059,14 @@ OPENBB_2003_TICKERS = [
     "ZS",
     "ZW",
 ]
+
+OPENBB_PROCESSED_TICKERS_26_126 = [
+    "6C",
+    "6Z",
+    "6J",
+    "CT",
+    "CL",
+    "DX",
+    "CC",
+    "AR",
+]

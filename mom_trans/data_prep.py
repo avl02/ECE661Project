@@ -29,16 +29,39 @@ def read_changepoint_results_and_fill_na(
     Returns:
         pd.DataFrame: changepoint severity and location information
     """
+    try:
+        df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+        df = (
+            df.ffill()
+            .dropna()
+            .assign(
+                cp_location_norm=lambda row: (row["t"] - row["cp_location"])
+                / lookback_window_length
+            )
+        )
+    except KeyError:
+        raise KeyError(
+            f"KeyError: The file {file_path} does not contain the expected columns."
+        )
 
     return (
-        pd.read_csv(file_path, index_col=0, parse_dates=True)
-        .fillna(method="ffill")
-        .dropna()  # if first values are na
+        df.ffill()
+        .dropna()
         .assign(
             cp_location_norm=lambda row: (row["t"] - row["cp_location"])
             / lookback_window_length
-        )  # fill by assigning the previous cp and score, then recalculate norm location
-    )
+        )
+    )  # fill by assigning the previous cp and score, then recalculate norm location
+
+    # return (
+    #     pd.read_csv(file_path, index_col=0, parse_dates=True)
+    #     .fillna(method="ffill")
+    #     .dropna()  # if first values are na
+    #     .assign(
+    #         cp_location_norm=lambda row: (row["t"] - row["cp_location"])
+    #         / lookback_window_length
+    #     )  # fill by assigning the previous cp and score, then recalculate norm location
+    # )
 
 
 def prepare_cpd_features(
@@ -61,6 +84,7 @@ def prepare_cpd_features(
                 os.path.join(folder_path, f), lookback_window_length
             ).assign(ticker=os.path.splitext(f)[0])
             for f in os.listdir(folder_path)
+            if f.lower().endswith(".csv")
         ]
     )
 

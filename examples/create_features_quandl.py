@@ -12,6 +12,7 @@ from settings.default import (
     OPENBB_2003_TICKERS,
     CPD_OPENBB_OUTPUT_FOLDER,
     FEATURES_OPENBB_FILE_PATH,
+    OPENBB_PROCESSED_TICKERS_26_126,
 )
 from mom_trans.data_prep import (
     deep_momentum_strategy_features,
@@ -120,7 +121,7 @@ if __name__ == "__main__":
         args = parser.parse_known_args()[0]
 
         return (
-            OPENBB_2003_TICKERS,
+            OPENBB_PROCESSED_TICKERS_26_126,
             CPD_OPENBB_OUTPUT_FOLDER(args.lookback_window_length),
             args.lookback_window_length,
             FEATURES_OPENBB_FILE_PATH(args.lookback_window_length),
