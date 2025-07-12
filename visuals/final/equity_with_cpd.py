@@ -46,6 +46,42 @@ def load_cpd_events(csv_path):
     events = avg[avg >= thresh].index
     return events.sort_values()
 
+def compute_equity_metrics(daily_ret):
+    """
+    Given a pandas Series of daily returns, compute:
+      - max cumulative return
+      - min cumulative return
+      - final cumulative return
+      - max one‐day drawdown (worst single‐day return)
+    """
+    # cumulative equity, starting at 1.0
+    equity = (1 + daily_ret).cumprod()
+    
+    max_cum = equity.max()
+    min_cum = equity.min()
+    final   = equity.iloc[-1]
+    
+    # worst single‐day return is min(daily_ret)
+    max_one_day_dd = -daily_ret.min()
+    
+    weekly_ret = (1 + daily_ret).resample('W-FRI').prod() - 1
+
+    # 3) Weekly drawdown
+    #    Build weekly equity and compute per-week drawdowns
+    weekly_equity = (1 + weekly_ret).cumprod()
+    weekly_dd = (weekly_equity / weekly_equity.cummax() - 1)
+
+    # 4) Worst single‐week drawdown
+    max_weekly_dd = weekly_dd.min()
+    
+    return {
+        'max_cum_return': max_cum,
+        'min_cum_return': min_cum,
+        'final_return':   final,
+        'max_week_dd':      max_weekly_dd
+    }
+
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────────
 def main():
     os.makedirs(os.path.dirname(OUTFILE), exist_ok=True)
@@ -61,6 +97,9 @@ def main():
     # 3) apply pipeline
     daily_nl  = lean_pipeline(sig_nl,  ret_nl_raw)
     daily_cpd = lean_pipeline(sig_cpd, ret_cpd_raw)
+    
+    print(compute_equity_metrics(daily_nl))
+    print(compute_equity_metrics(daily_cpd))
 
     # 4) cumulative curves
     cum_nl  = (1 + daily_nl).cumprod()

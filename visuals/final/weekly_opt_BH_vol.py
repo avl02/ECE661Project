@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# visualize_performance_weekly.py
-
 import os
 import numpy as np
 import pandas as pd
@@ -38,6 +35,13 @@ def load_strategy(path):
     return sig, ret
 
 def build_true_buy_hold_daily(csv_path):
+    """
+    True un‑rebalanced buy & hold:
+      - pivot close prices
+      - normalize each series to 1 at START_DATE
+      - average across tickers to get portfolio value
+      - compute daily pct change
+    """
     df = pd.read_csv(csv_path, parse_dates=['Date'])
     price = df.pivot(index='Date', columns='ticker', values='close')
     price = price.sort_index().loc[START_DATE:END_DATE]
@@ -47,12 +51,20 @@ def build_true_buy_hold_daily(csv_path):
     return daily_ret
 
 def lean_pipeline(signal, returns):
+    """
+    3-step pipeline: smoothing + vol scaling
+    """
+    # 1. Smooth raw position signal
     s = signal.rolling(SMOOTH_WINDOW).mean().fillna(0)
+    # 2. Prepare for volatility estimate
     pos_pre = s.shift(1)
     daily_pre = pos_pre * returns
+    # 3. Rolling volatility
     vol = daily_pre.rolling(VOL_WINDOW).std().fillna(method='bfill')
+    # 4. Scale to target volatility
     scale = TARGET_VOL / np.sqrt(252)
     pos_scaled = s * (scale / vol)
+    # 5. Execute next day
     pos_exec = pos_scaled.shift(1).fillna(0)
     daily_ret = pos_exec * returns
     return daily_ret
@@ -105,12 +117,16 @@ def summarize_weekly_metrics(metrics):
 def main():
     os.makedirs(VISUALS_DIR, exist_ok=True)
 
-    # Load strategies
+    # Load model signals & returns
     sig_nl, ret_nl = load_strategy(BASELINE_PATH)
     sig_21, ret_21 = load_strategy(CPD21_PATH)
-    ret_bh         = build_true_buy_hold_daily(PRICE_CSV)
+    # Build true buy & hold raw daily returns
+    ret_bh_raw     = build_true_buy_hold_daily(PRICE_CSV)
+    # Create constant 1.0 signal to vol‑scale BH
+    bh_signal      = pd.Series(1.0, index=ret_bh_raw.index)
+    ret_bh         = lean_pipeline(bh_signal, ret_bh_raw)
 
-    # Apply pipeline
+    # Apply pipeline to LSTMs
     weekly_nl = lean_pipeline(sig_nl, ret_nl)
     weekly_21 = lean_pipeline(sig_21, ret_21)
     weekly_bh = ret_bh
@@ -125,9 +141,9 @@ def main():
 
     weeks = metrics[names[0]]['ret'].index
     
-    summary_df = summarize_weekly_metrics(metrics)
+    summarize_weekly_metrics(metrics)
 
-    # 1) Weekly Absolute Return
+    # 1) Weekly Absolute Returns
     plt.figure(figsize=(10,5))
     for name in names:
         plt.plot(weeks, metrics[name]['ret'], marker='o', label=name)
@@ -136,7 +152,7 @@ def main():
     plt.xticks(rotation=45)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{VISUALS_DIR}/opt_weekly_abs_return.png", dpi=150)
+    plt.savefig(f"{VISUALS_DIR}/opt_weekly_abs_return_BH_vol.png", dpi=150)
 
     # 2) Weekly Sharpe Ratio
     plt.figure(figsize=(10,5))
@@ -147,7 +163,7 @@ def main():
     plt.xticks(rotation=45)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{VISUALS_DIR}/opt_weekly_sharpe.png", dpi=150)
+    plt.savefig(f"{VISUALS_DIR}/opt_weekly_sharpe_BH_vol.png", dpi=150)
 
     # 3) Weekly Max Drawdown
     plt.figure(figsize=(10,5))
@@ -158,9 +174,8 @@ def main():
     plt.xticks(rotation=45)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{VISUALS_DIR}/opt_weekly_max_drawdown.png", dpi=150)
+    plt.savefig(f"{VISUALS_DIR}/opt_weekly_max_drawdown_BH_vol.png", dpi=150)
 
-    print("Saved weekly plots under 'visuals/final/plots'.")
-    
+
 if __name__ == '__main__':
     main()
